@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Platform,
   StyleSheet,
   Switch,
   Text,
@@ -40,7 +41,7 @@ export function AddDeviceModal({ visible, onClose, onAdded, initialDeviceId }: P
     // accept fresh pre-fills when reopened (e.g. successive QR scans)
     if (visible && initialDeviceId) setDeviceId(initialDeviceId);
   }, [visible, initialDeviceId]);
-  const [autoAcceptFolders, setAutoAcceptFolders] = useState(true);
+  const [autoAcceptFolders, setAutoAcceptFolders] = useState(Platform.OS !== 'android');
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -74,7 +75,7 @@ export function AddDeviceModal({ visible, onClose, onAdded, initialDeviceId }: P
   const reset = () => {
     setDeviceId('');
     setName('');
-    setAutoAcceptFolders(true);
+    setAutoAcceptFolders(Platform.OS !== 'android');
     setError(null);
     setSubmitting(false);
   };
@@ -184,7 +185,9 @@ export function AddDeviceModal({ visible, onClose, onAdded, initialDeviceId }: P
         <View style={{ flex: 1, paddingRight: 12 }}>
           <Text style={styles.switchLabel}>Auto-accept folders</Text>
           <Text style={styles.switchHint}>
-            Skip the per-folder accept prompt for offers from this peer.
+            {Platform.OS === 'android'
+              ? 'Skip the per-folder prompt. Folders land in app storage (Android/data), which other apps cannot open.'
+              : 'Skip the per-folder accept prompt for offers from this peer.'}
           </Text>
         </View>
         <Switch

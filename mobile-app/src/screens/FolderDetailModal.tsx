@@ -19,10 +19,12 @@ import { Focusable } from '../components/Focusable';
 import { useKeyboardHeight } from '../hooks/useKeyboardHeight';
 import { useSyncthing, useSyncthingClient } from '../daemon/SyncthingContext';
 import type { DbStatus, DeviceConfig, FolderConfig, FolderError } from '../api/types';
+import { isAbortError } from '../api/syncthing';
 import { colors, formatBytes, Progress } from '../components/ui';
 import { removeDir } from '../fs/bridgeFs';
 import GoBridge from '../GoServerBridgeJSI';
 import {
+  filesystemTypeForExternal,
   isExternalFolder,
   pickExternalFolderWithICloudWarning,
   externalFolderNeedsAllFilesAccess,
@@ -399,6 +401,95 @@ export function FolderDetailModal({
     } finally {
       setBusy(false);
     }
+  };
+
+  const moveReady = !!status && status.state === 'idle' && status.needBytes === 0;
+
+  const doMove = async (newPath: string, displayName: string) => {
+    if (!folder) return;
+    setBusy(true);
+    setError(null);
+    const oldPath = folder.path;
+    try {
+      let ignores: string[] = [];
+      try {
+        ignores = await client.getIgnores(folder.id);
+      } catch {
+        // keep going; folder still usable without ignores
+      }
+      await client.deleteFolder(folder.id);
+      const fsType = filesystemTypeForExternal(newPath);
+      const usesSaf = fsType === 'saf';
+      const moved: FolderConfig = {
+        ...folder,
+        path: newPath,
+        filesystemType: fsType,
+        rescanIntervalS: usesSaf ? 60 : folder.rescanIntervalS,
+        fsWatcherEnabled: !usesSaf && folder.fsWatcherEnabled,
+      };
+      try {
+        await client.putFolder(moved);
+      } catch (e) {
+        if (!isAbortError(e)) throw e;
+        const created = await client.waitForFolder(moved.id, { deadlineMs: 60_000 });
+        if (!created) throw new Error('Moving the folder timed out. Please try again.');
+      }
+      if (ignores.length > 0) {
+        try {
+          await client.setIgnores(moved.id, ignores);
+        } catch {
+          // best-effort
+        }
+      }
+      onChanged();
+      onClose();
+      if (isExternal) return;
+      Alert.alert(
+        'Folder moved',
+        `"${folder.label || folder.id}" now syncs to ${displayName}. Files will be re-downloaded from your other devices.\n\nDelete the old copy in app storage?`,
+        [
+          { text: 'Keep', style: 'cancel' },
+          {
+            text: 'Delete old copy',
+            style: 'destructive',
+            onPress: () => {
+              try {
+                removeDir(oldPath);
+              } catch (e) {
+                Alert.alert('Could not delete', e instanceof Error ? e.message : String(e));
+              }
+            },
+          },
+        ],
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const confirmMove = () => {
+    if (!folder) return;
+    if (!moveReady) {
+      Alert.alert(
+        'Folder not up to date',
+        'Wait until this folder shows "Up to date" before moving it, otherwise local changes that have not synced yet will be lost.',
+      );
+      return;
+    }
+    pickExternalFolderWithICloudWarning(picked => {
+      if (!picked) return;
+      const name = picked.displayName || 'the chosen folder';
+      Alert.alert(
+        'Move folder?',
+        `"${folder.label || folder.id}" will sync to ${name} instead of its current location.\n\nAll files will be re-downloaded from your other devices. The folder must stay shared with at least one connected device.`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Move', onPress: () => doMove(picked.path, name) },
+        ],
+      );
+    });
   };
 
   const confirmDelete = () => {
@@ -943,6 +1034,16 @@ export function FolderDetailModal({
                 </Text>
               </Focusable>
             ) : null}
+
+            <Focusable
+              style={[styles.actionBtn, styles.overrideBtn]}
+              onPress={confirmMove}
+              disabled={busy}
+            >
+              <Text style={[styles.actionBtnText, styles.overrideBtnText]}>
+                Move to another location
+              </Text>
+            </Focusable>
 
             <Focusable
               style={[styles.actionBtn, styles.deleteBtn, styles.deleteBtnFull]}

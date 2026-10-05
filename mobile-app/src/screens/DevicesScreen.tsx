@@ -1,6 +1,7 @@
 import React, { useCallback, useState } from 'react';
 import {
   Alert,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -142,7 +143,7 @@ function PendingDeviceCard({
 }) {
   const client = useSyncthingClient();
   const [busy, setBusy] = useState(false);
-  const [autoAcceptFolders, setAutoAcceptFolders] = useState(true);
+  const [autoAcceptFolders, setAutoAcceptFolders] = useState(Platform.OS !== 'android');
 
   const accept = async () => {
     if (busy) return;
@@ -205,7 +206,9 @@ function PendingDeviceCard({
         <View style={{ flex: 1, paddingRight: 12 }}>
           <Text style={styles.autoAcceptLabel}>Auto-accept folders</Text>
           <Text style={styles.autoAcceptHint}>
-            Skip the per-folder accept prompt for offers from this peer.
+            {Platform.OS === 'android'
+              ? 'Skip the per-folder prompt. Folders land in app storage (Android/data), which other apps cannot open.'
+              : 'Skip the per-folder accept prompt for offers from this peer.'}
           </Text>
         </View>
         <Switch
