@@ -77,4 +77,8 @@
 
 + (NSString * _Nonnull)importConfig:(NSString * _Nonnull)password;
 
++ (NSString * _Nonnull)getSystemLog:(NSString * _Nonnull)since limit:(NSInteger)limit;
+
++ (NSString * _Nonnull)writeSystemLog:(NSString * _Nonnull)dstPath;
+
 @end

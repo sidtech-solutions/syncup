@@ -1,0 +1,51 @@
+--- /dev/null
++++ b/lib/syncthing/mobilelog.go
+@@ -0,0 +1,48 @@
++// Copyright (C) 2025 The Syncthing Authors.
++//
++// This Source Code Form is subject to the terms of the Mozilla Public
++// License, v. 2.0. If a copy of the MPL was not distributed with this file,
++// You can obtain one at https://mozilla.org/MPL/2.0/.
++
++package syncthing
++
++import (
++	"encoding/json"
++	"io"
++	"time"
++
++	"github.com/syncthing/syncthing/internal/slogutil"
++)
++
++// In-process access to the global log buffer for the mobile wrapper. The
++// wrapper lives in another module and so cannot import internal/slogutil
++// itself; it also cannot rely on /rest/system/log, because that goes over
++// loopback and a device firewall or VPN lockdown can drop loopback traffic
++// while the daemon itself is perfectly healthy (siddarthkay/syncup#73).
++// Output matches the REST endpoints byte for byte so clients need no second
++// parser.
++
++// SystemLogJSON is /rest/system/log: {"messages": [...]} for lines after
++// since. A positive limit keeps only the newest limit lines.
++func SystemLogJSON(since time.Time, limit int) ([]byte, error) {
++	lines := slogutil.GlobalRecorder.Since(since)
++	if limit > 0 && limit < len(lines) {
++		lines = lines[len(lines)-limit:]
++	}
++	if lines == nil {
++		lines = []slogutil.Line{}
++	}
++	return json.Marshal(map[string][]slogutil.Line{"messages": lines})
++}
++
++// WriteSystemLogTxt is /rest/system/log.txt: one "<RFC3339> <LVL> <message>"
++// line per entry after since.
++func WriteSystemLogTxt(w io.Writer, since time.Time) error {
++	format := slogutil.LineFormat{TimestampFormat: time.RFC3339, LevelString: true}
++	for _, line := range slogutil.GlobalRecorder.Since(since) {
++		if _, err := line.WriteTo(w, format); err != nil {
++			return err
++		}
++	}
++	return nil
++}

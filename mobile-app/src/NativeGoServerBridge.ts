@@ -131,6 +131,8 @@ export interface Spec extends TurboModule {
   readonly previewFileNative: (pathsJson: string, startIndex: number) => void;
   readonly exportConfig: (asyncStorageJson: string) => string;
   readonly importConfig: (password: string) => string;
+  readonly getSystemLog: (since: string, limit: number) => string;
+  readonly writeSystemLog: (dstPath: string) => string;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('GoServerBridge');

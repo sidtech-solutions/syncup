@@ -71,6 +71,8 @@ public:
     // Backup / restore. Returns JSON (see NativeGoServerBridge.ts).
     facebook::jsi::String exportConfig(facebook::jsi::Runtime &rt, facebook::jsi::String asyncStorageJson);
     facebook::jsi::String importConfig(facebook::jsi::Runtime &rt, facebook::jsi::String password);
+    facebook::jsi::String getSystemLog(facebook::jsi::Runtime &rt, facebook::jsi::String since, double limit);
+    facebook::jsi::String writeSystemLog(facebook::jsi::Runtime &rt, facebook::jsi::String dstPath);
 };
 #endif
 

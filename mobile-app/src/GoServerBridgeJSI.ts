@@ -55,6 +55,8 @@ export interface GoServerBridgeInterface {
   getExternalStorageRoot(): string;
   exportConfig(asyncStorageJson: string): string;
   importConfig(password: string): string;
+  getSystemLog(since: string, limit: number): string;
+  writeSystemLog(dstPath: string): string;
 }
 
 class GoServerBridgeJSI implements GoServerBridgeInterface {
@@ -262,6 +264,14 @@ class GoServerBridgeJSI implements GoServerBridgeInterface {
 
   importConfig(password: string): string {
     return NativeGoServerBridge.importConfig(password);
+  }
+
+  getSystemLog(since: string, limit: number): string {
+    return NativeGoServerBridge.getSystemLog(since, limit);
+  }
+
+  writeSystemLog(dstPath: string): string {
+    return NativeGoServerBridge.writeSystemLog(dstPath);
   }
 }
 

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Modal,
   Platform,
@@ -16,11 +15,12 @@ import * as Sharing from 'expo-sharing';
 import ReactNativeBlobUtil from 'react-native-blob-util';
 import { Focusable } from '../components/Focusable';
 import { FlashList } from '@shopify/flash-list';
-import { useSyncthingClient } from '../daemon/SyncthingContext';
+import GoBridge from '../GoServerBridgeJSI';
 import type { SystemLogMessage } from '../api/types';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { colors } from '../components/ui';
 import { useKeyboardHeight } from '../hooks/useKeyboardHeight';
+import { parseLogFileResult, parseSystemLog } from '../utils/daemonLog';
 import { formatLogHeader, logFileName } from '../utils/logExport';
 
 interface Props {
@@ -35,7 +35,6 @@ const LOG_BODY_TMP = 'syncup-logbody.tmp';
 
 // inverted FlashList. FlatList was janky on Android at a few hundred rows.
 export function LogsModal({ visible, onClose }: Props) {
-  const client = useSyncthingClient();
   const keyboardHeight = useKeyboardHeight();
   const { height: winHeight } = useWindowDimensions();
   const sheetHeight = Math.max(320, (winHeight - keyboardHeight) * 0.92);
@@ -44,18 +43,17 @@ export function LogsModal({ visible, onClose }: Props) {
   const [messages, setMessages] = useState<SystemLogMessage[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
 
   const lastSeenRef = useRef<string>('');
 
-  const fetchLogs = useCallback(async () => {
+  const fetchLogs = useCallback(() => {
     try {
       const since = lastSeenRef.current;
-      const res = await client.systemLog(
-        since ? { since } : { limit: INITIAL_TAIL },
+      const fresh = parseSystemLog(
+        GoBridge.getSystemLog(since, since ? 0 : INITIAL_TAIL),
       );
-      const fresh = res.messages ?? [];
+      setError(null);
       if (fresh.length === 0) return;
       lastSeenRef.current = fresh[fresh.length - 1].when;
       setMessages(prev => {
@@ -67,7 +65,7 @@ export function LogsModal({ visible, onClose }: Props) {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [client]);
+  }, []);
 
   useEffect(() => {
     if (!visible) {
@@ -77,8 +75,7 @@ export function LogsModal({ visible, onClose }: Props) {
       setPaused(false);
       return;
     }
-    setLoading(true);
-    fetchLogs().finally(() => setLoading(false));
+    fetchLogs();
   }, [visible, fetchLogs]);
 
   useEffect(() => {
@@ -104,21 +101,8 @@ export function LogsModal({ visible, onClose }: Props) {
     try {
       if (!dir) throw new Error('No cache directory available');
       await deleteStaleExports();
-      const { url, headers } = client.systemLogTxtEndpoint();
-      const [download, version, status] = await Promise.all([
-        FileSystem.downloadAsync(url, bodyUri, {
-          headers,
-          sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
-        }),
-        client.systemVersion().catch(() => null),
-        client.systemStatus().catch(() => null),
-      ]);
-      if (download.status !== 200) {
-        throw new Error(`Log download failed: HTTP ${download.status}`);
-      }
-      const info = await FileSystem.getInfoAsync(bodyUri);
-      const logBytes = info.exists ? (info.size ?? 0) : 0;
-      if (logBytes === 0) {
+      const file = parseLogFileResult(GoBridge.writeSystemLog(stripScheme(bodyUri)));
+      if (file.bytes === 0) {
         Alert.alert('Nothing to export', 'The daemon log is empty.');
         return;
       }
@@ -128,11 +112,14 @@ export function LogsModal({ visible, onClose }: Props) {
       await FileSystem.writeAsStringAsync(
         uri,
         formatLogHeader({
-          version,
-          status,
-          platform: `${Platform.OS} ${String(Platform.Version)}`,
           exportedAt,
-          logBytes,
+          platform: `${Platform.OS} ${String(Platform.Version)}`,
+          syncthingVersion: file.version,
+          build: `${file.os}/${file.arch}`,
+          deviceId: file.deviceId,
+          uptimeSec: file.uptimeSec,
+          goroutines: file.goroutines,
+          logBytes: file.bytes,
         }),
       );
       await ReactNativeBlobUtil.fs.appendFile(
@@ -159,7 +146,7 @@ export function LogsModal({ visible, onClose }: Props) {
       await FileSystem.deleteAsync(bodyUri, { idempotent: true }).catch(() => {});
       setExporting(false);
     }
-  }, [client, exporting]);
+  }, [exporting]);
 
   const renderItem = useCallback(
     ({ item }: { item: SystemLogMessage }) => (
@@ -226,11 +213,7 @@ export function LogsModal({ visible, onClose }: Props) {
 
           {error && <Text style={styles.error}>{error}</Text>}
 
-          {loading && messages.length === 0 ? (
-            <View style={styles.loading}>
-              <ActivityIndicator color={colors.textDim} />
-            </View>
-          ) : messages.length === 0 ? (
+          {messages.length === 0 ? (
             <View style={styles.loading}>
               <Text style={styles.empty}>No log messages yet.</Text>
             </View>

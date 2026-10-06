@@ -733,6 +733,24 @@ class GoServerBridgeModule(reactContext: ReactApplicationContext) :
         }
     }
 
+    override fun getSystemLog(since: String, limit: Double): String {
+        return try {
+            mobileAPI.getSystemLog(since, limit.toLong()) ?: "{\"messages\":[]}"
+        } catch (e: Exception) {
+            android.util.Log.e(NAME, "getSystemLog failed", e)
+            "{\"error\":\"${e.message}\"}"
+        }
+    }
+
+    override fun writeSystemLog(dstPath: String): String {
+        return try {
+            mobileAPI.writeSystemLog(dstPath) ?: "{\"error\":\"nil result\"}"
+        } catch (e: Exception) {
+            android.util.Log.e(NAME, "writeSystemLog failed", e)
+            "{\"error\":\"${e.message}\"}"
+        }
+    }
+
     private fun jsonError(msg: String): String =
         org.json.JSONObject().apply {
             put("ok", false)
