@@ -27,7 +27,10 @@ import {
   pickExternalFolderWithICloudWarning,
   externalFolderNeedsAllFilesAccess,
   validateExternalFolderAccess,
+  getPersistedExternalFolders,
+  relocateExternalFolder,
 } from '../fs/externalFolder';
+import { classifyRegrantPick } from '../fs/externalFolderRelocation';
 import { FolderIgnoresEditor } from './FolderIgnoresEditor';
 import { FolderAdvancedEditor } from './FolderAdvancedEditor';
 import { FolderVersioningEditor } from './FolderVersioningEditor';
@@ -667,6 +670,34 @@ export function FolderDetailModal({
                         if (!picked) return;
                         if (validateExternalFolderAccess(folder)) {
                           setExternalAccessValid(true);
+                          return;
+                        }
+                        const verdict = classifyRegrantPick(
+                          getPersistedExternalFolders(),
+                          folder.path,
+                          picked.path,
+                        );
+                        const relocate = () => {
+                          setBusy(true);
+                          relocateExternalFolder(client, folder, picked.path)
+                            .then(() => {
+                              setExternalAccessValid(true);
+                              onChanged();
+                            })
+                            .catch(e => setError(e instanceof Error ? e.message : String(e)))
+                            .finally(() => setBusy(false));
+                        };
+                        if (verdict === 'known') {
+                          relocate();
+                        } else if (verdict === 'likely') {
+                          Alert.alert(
+                            'Folder moved',
+                            `“${picked.displayName || picked.path}” looks like this folder at a new location. Use it for “${folder.label || folder.id}”?`,
+                            [
+                              { text: 'Cancel', style: 'cancel' },
+                              { text: 'Use folder', onPress: relocate },
+                            ],
+                          );
                         } else {
                           Alert.alert(
                             'Different folder selected',

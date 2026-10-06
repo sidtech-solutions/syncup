@@ -1,6 +1,13 @@
 import { Platform, Alert } from 'react-native';
 import GoBridge from '../GoServerBridgeJSI';
 import type { FolderConfig } from '../api/types';
+import type { SyncthingClient } from '../api/syncthing';
+import {
+  findRelocatedExternalFolderPath,
+  parsePersistedExternalFolders,
+  samePath,
+  type PersistedExternalFolder,
+} from './externalFolderRelocation';
 
 /**
  * Result of a successful folder pick. `id` is opaque (a SAF tree URI on
@@ -119,4 +126,53 @@ export function validateExternalFolderAccess(folder: FolderConfig): boolean {
     return GoBridge.hasAllFilesAccess();
   }
   return GoBridge.validateExternalFolder(folder.path);
+}
+
+export function getPersistedExternalFolders(): PersistedExternalFolder[] {
+  try {
+    return parsePersistedExternalFolders(GoBridge.getPersistedExternalFolders());
+  } catch {
+    return [];
+  }
+}
+
+export async function relocateExternalFolder(
+  client: SyncthingClient,
+  folder: FolderConfig,
+  newPath: string,
+): Promise<void> {
+  await client.patchFolder(folder.id, { path: newPath });
+  const stale = getPersistedExternalFolders().find(
+    e => samePath(e.path, folder.path) && !samePath(e.path, newPath),
+  );
+  if (stale) {
+    try {
+      GoBridge.revokeExternalFolder(folder.path);
+    } catch {
+      // best-effort cleanup; the orphaned bookmark is harmless
+    }
+  }
+}
+
+export async function reconcileExternalFolderPaths(
+  client: SyncthingClient,
+  foldersRoot: string,
+): Promise<string[]> {
+  if (Platform.OS !== 'ios') return [];
+  const entries = getPersistedExternalFolders();
+  if (!entries.some(e => (e.previousPaths?.length ?? 0) > 0)) return [];
+  const folders = await client.folders();
+  const relocated: string[] = [];
+  for (const folder of folders) {
+    if (!isExternalFolder(folder, foldersRoot)) continue;
+    const newPath = findRelocatedExternalFolderPath(entries, folder.path);
+    if (!newPath) continue;
+    try {
+      await client.patchFolder(folder.id, { path: newPath });
+      relocated.push(folder.id);
+    } catch (e) {
+      console.warn(`relocate ${folder.id} -> ${newPath} failed:`, e);
+    }
+  }
+  return relocated;
 }
