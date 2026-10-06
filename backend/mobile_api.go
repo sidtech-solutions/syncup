@@ -274,7 +274,23 @@ func inSandbox(p string) (string, error) {
 	globalMu.Lock()
 	roots = append(roots, externalRoots...)
 	globalMu.Unlock()
+	// Configured folder paths count as roots too: the daemon already syncs
+	// into them, so JS file ops (photo backup) may target them. Covers
+	// All-Files-Access folders (e.g. DCIM) that live outside foldersRoot and
+	// aren't registered as externalRoots on Android.
+	roots = append(roots, currentFolderPaths()...)
 	return inSandboxAtRoots(roots, p)
+}
+
+// currentFolderPaths returns the POSIX Path of every configured folder that
+// isn't a content:// SAF tree URI.
+func currentFolderPaths() []string {
+	globalMu.Lock()
+	defer globalMu.Unlock()
+	if globalClient == nil {
+		return nil
+	}
+	return globalClient.folderFSPaths()
 }
 
 // inSandboxAt is the single-root convenience for tests.
@@ -437,6 +453,12 @@ func (m *MobileAPI) ResolvePath(path string) string {
 // any readable path (needed for photo backup where the source is a
 // system-managed media path outside the sandbox).
 func (m *MobileAPI) CopyFile(src, dst string) string {
+	// SAF-backed folders have a content:// tree URI as their root, not a POSIX
+	// path, so os.Create can't write into them. Route those through the SAF
+	// bridge instead. (Photo backup into a SAF folder hits this path.)
+	if strings.HasPrefix(dst, "content://") {
+		return copyFileSAF(src, dst)
+	}
 	absDst, err := inSandbox(dst)
 	if err != nil {
 		return marshalErr(err)
@@ -459,6 +481,55 @@ func (m *MobileAPI) CopyFile(src, dst string) string {
 		return marshalErr(err)
 	}
 	b, _ := json.Marshal(fsResultJSON{Path: absDst})
+	return string(b)
+}
+
+// copyFileSAF copies src (a readable POSIX path) into a content:// destination
+// inside a SAF-backed folder. dst is resolved to the owning folder's tree URI
+// plus a relative path, then written via the SAF filesystem (CreateFile/OpenFd
+// over JNI). src stays a plain os.Open since it's a system media path.
+func copyFileSAF(src, dst string) string {
+	globalMu.Lock()
+	client := globalClient
+	bridge := globalSAFBridge
+	globalMu.Unlock()
+	if client == nil {
+		return marshalErr(errors.New("daemon not started"))
+	}
+	if bridge == nil {
+		return marshalErr(errors.New("SAF bridge not registered"))
+	}
+	treeURI, rel, ok := client.safTreeForPath(dst)
+	if !ok {
+		return marshalErr(errors.New("path outside sandbox"))
+	}
+	sfs, err := newSAFFilesystem(treeURI)
+	if err != nil {
+		return marshalErr(err)
+	}
+	if dir := filepath.Dir(rel); dir != "." && dir != "" {
+		if err := sfs.MkdirAll(dir, 0o755); err != nil {
+			return marshalErr(err)
+		}
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return marshalErr(err)
+	}
+	defer in.Close()
+	out, err := sfs.Create(rel)
+	if err != nil {
+		return marshalErr(err)
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = sfs.Remove(rel)
+		return marshalErr(err)
+	}
+	if err := out.Close(); err != nil {
+		return marshalErr(err)
+	}
+	b, _ := json.Marshal(fsResultJSON{Path: dst})
 	return string(b)
 }
 
