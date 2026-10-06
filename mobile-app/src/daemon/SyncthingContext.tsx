@@ -10,6 +10,7 @@ import React, {
 import { AppState, Platform } from 'react-native';
 import GoBridge from '../GoServerBridgeJSI';
 import { SyncthingClient } from '../api/syncthing';
+import { reconcileExternalFolderPaths } from '../fs/externalFolder';
 
 export interface DaemonInfo {
   port: number;
@@ -68,6 +69,16 @@ function sameInfo(prev: DaemonInfo | null, next: DaemonInfo): boolean {
   );
 }
 
+async function relocateDriftedFolders(info: DaemonInfo): Promise<void> {
+  if (Platform.OS !== 'ios') return;
+  try {
+    const client = new SyncthingClient({ apiKey: info.apiKey, guiAddress: info.guiAddress });
+    await reconcileExternalFolderPaths(client, info.foldersRoot);
+  } catch (e) {
+    console.warn('external folder relocation failed:', e);
+  }
+}
+
 function readNativeInfo(): DaemonInfo | null {
   const port = GoBridge.startServer();
   if (port <= 0) return null;
@@ -114,7 +125,10 @@ export function SyncthingProvider({ children }: { children: React.ReactNode }) {
       setError(null);
 
       const alive = await pingDaemon(first.guiAddress, first.apiKey, 2000);
-      if (alive) return;
+      if (alive) {
+        await relocateDriftedFolders(first);
+        return;
+      }
 
       try {
         GoBridge.stopServer();
@@ -129,6 +143,9 @@ export function SyncthingProvider({ children }: { children: React.ReactNode }) {
       setInfo(prev => (sameInfo(prev, recovered) ? prev : recovered));
       // Existing event long-poll / useResource retries pick up the fresh
       // listener on their next tick; no need to re-ping here.
+      if (await pingDaemon(recovered.guiAddress, recovered.apiKey, 5000)) {
+        await relocateDriftedFolders(recovered);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

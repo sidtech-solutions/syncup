@@ -17,6 +17,31 @@ import UIKit
         var displayName: String
         var lastResolvedPath: String
         let addedAt: Date
+        var previousPaths: [String]
+
+        init(id: String, bookmark: Data, displayName: String,
+             lastResolvedPath: String, addedAt: Date, previousPaths: [String] = []) {
+            self.id = id
+            self.bookmark = bookmark
+            self.displayName = displayName
+            self.lastResolvedPath = lastResolvedPath
+            self.addedAt = addedAt
+            self.previousPaths = previousPaths
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case id, bookmark, displayName, lastResolvedPath, addedAt, previousPaths
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            id = try c.decode(String.self, forKey: .id)
+            bookmark = try c.decode(Data.self, forKey: .bookmark)
+            displayName = try c.decode(String.self, forKey: .displayName)
+            lastResolvedPath = try c.decode(String.self, forKey: .lastResolvedPath)
+            addedAt = try c.decode(Date.self, forKey: .addedAt)
+            previousPaths = try c.decodeIfPresent([String].self, forKey: .previousPaths) ?? []
+        }
     }
 
     /// id -> live URL with security scope started. Acquire/release tracks
@@ -157,7 +182,7 @@ import UIKit
         return jsonString(payload) ?? ""
     }
 
-    /// Returns JSON array: [{ id, path, displayName, isStale }].
+    /// Returns JSON array: [{ id, path, displayName, isStale, previousPaths }].
     @objc func getPersistedFoldersJSON() -> String {
         let entries = loadEntries()
         var out: [[String: Any]] = []
@@ -174,6 +199,7 @@ import UIKit
                 "path": e.lastResolvedPath,
                 "displayName": e.displayName,
                 "isStale": stale,
+                "previousPaths": e.previousPaths,
             ])
         }
         return jsonString(out) ?? "[]"
@@ -225,10 +251,15 @@ import UIKit
         for i in 0..<entries.count {
             let e = entries[i]
             // Don't double-acquire on re-entry (e.g. BG launches that hit a
-            // still-running daemon process).
             if let existing = (queue.sync { self.acquired[e.id] }) {
-                result[existing.path] = existing.path
-                continue
+                if FileManager.default.fileExists(atPath: existing.path) {
+                    result[existing.path] = existing.path
+                    continue
+                }
+                NSLog("ScopedFolderStore: acquired path vanished for %@: %@",
+                      e.id, existing.path)
+                existing.stopAccessingSecurityScopedResource()
+                queue.sync { _ = self.acquired.removeValue(forKey: e.id) }
             }
             var stale = false
             let url: URL
@@ -255,6 +286,13 @@ import UIKit
             if url.path != e.lastResolvedPath {
                 NSLog("ScopedFolderStore: path drift for %@: %@ -> %@",
                       e.id, e.lastResolvedPath, url.path)
+                // Remember the old location so lookups by the path still in
+                // syncthing's config keep resolving to this entry, and so JS
+                // can discover where the folder went.
+                if !entries[i].previousPaths.contains(e.lastResolvedPath) {
+                    entries[i].previousPaths.append(e.lastResolvedPath)
+                }
+                entries[i].previousPaths.removeAll(where: { $0 == url.path })
                 entries[i].lastResolvedPath = url.path
                 dirty = true
             }
@@ -269,7 +307,8 @@ import UIKit
                         bookmark: fresh,
                         displayName: entries[i].displayName,
                         lastResolvedPath: url.path,
-                        addedAt: e.addedAt
+                        addedAt: e.addedAt,
+                        previousPaths: entries[i].previousPaths
                     )
                     dirty = true
                 }
@@ -293,10 +332,15 @@ import UIKit
 
     private func findEntry(byPath path: String) -> Entry? {
         let canonical = URL(fileURLWithPath: path).standardizedFileURL.path
-        return loadEntries().first(where: { e in
-            let entryCanonical = URL(fileURLWithPath: e.lastResolvedPath).standardizedFileURL.path
-            return entryCanonical == canonical || e.lastResolvedPath == path
-        })
+        let entries = loadEntries()
+        let matches: (String) -> Bool = { candidate in
+            candidate == path
+                || URL(fileURLWithPath: candidate).standardizedFileURL.path == canonical
+        }
+        if let current = entries.first(where: { matches($0.lastResolvedPath) }) {
+            return current
+        }
+        return entries.first(where: { e in e.previousPaths.contains(where: matches) })
     }
 
     private func deriveDisplayName(_ url: URL) -> String {

@@ -70,9 +70,10 @@ export interface Spec extends TurboModule {
   readonly pickExternalFolder: () => string;
   /**
    * JSON array of currently-persisted external folders:
-   *   [{ id, path, displayName, isStale }]
-   * On Android `id === path === content://...`. On iOS `id` is an opaque UUID
-   * and `path` is the resolved POSIX path.
+   *   [{ id, path, displayName, isStale, previousPaths? }]
+   * On Android `id === path === content://...`. On iOS `id` is an opaque UUID,
+   * `path` is the resolved POSIX path and `previousPaths` lists earlier
+   * resolved paths (the owning app's container UUID changes on update).
    */
   readonly getPersistedExternalFolders: () => string;
   /** Drop access for the folder; returns true if it existed. */
