@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { copyFile } from '../fs/bridgeFs';
 
-export type FolderStructure = 'flat' | 'byDate' | 'byYearMonth';
+export type FolderStructure = 'flat' | 'byDate' | 'byYearMonth' | 'byAlbum';
 export type MediaFilter = 'photo' | 'video' | 'all';
 
 export interface PhotoBackupConfig {
@@ -13,6 +13,28 @@ export interface PhotoBackupConfig {
   folderLabel: string;
   structure: FolderStructure;
   mediaFilter: MediaFilter;
+  /** Run the backup periodically in the background (WorkManager/BGTask). */
+  autoBackup?: boolean;
+  /**
+   * Requested interval between background runs, in minutes. The OS enforces a
+   * floor (~15 min on Android, opportunistic on iOS), so shorter values are
+   * clamped by the scheduler.
+   */
+  intervalMinutes?: number;
+  /**
+   * Move instead of copy: after an asset is verified present in the backup
+   * folder, delete the original from the device gallery. Deletion is silent
+   * when All Files Access is granted; otherwise Android shows a system consent
+   * dialog (so it only works on a foreground run, never headless).
+   */
+  deleteAfterBackup?: boolean;
+  /**
+   * Keep each file's original name (true, default). When false, the file is
+   * renamed to a timestamp derived from its creation time
+   * (e.g. 2024-08-11_143022.HEIC), which avoids collisions between same-named
+   * shots from different sources.
+   */
+  keepOriginalName?: boolean;
 }
 
 export interface BackupProgress {
@@ -20,6 +42,8 @@ export interface BackupProgress {
   total: number;
   copied: number;
   skipped: number;
+  /** Originals removed from the gallery when "move" (deleteAfterBackup) is on. */
+  deleted?: number;
   errorMessage?: string;
   lastSkipReason?: string;
 }
@@ -60,11 +84,128 @@ async function saveBackedUpIds(ids: Set<string>): Promise<void> {
   await AsyncStorage.setItem(BACKED_UP_KEY, JSON.stringify(Array.from(ids)));
 }
 
+function stripFileScheme(uri: string): string {
+  return uri.replace(/^file:\/\//, '');
+}
+
+// canonicalizePath normalizes an Android filesystem path so two paths that point
+// at the same location compare equal in the overlap guard. Without this the
+// guard misses nested assets when the two sides disagree on surface form:
+//   - /sdcard is a symlink to /storage/emulated/0, so the gallery may report
+//     /sdcard/DCIM/Archive/VID.mp4 while the backup folder is stored as
+//     /storage/emulated/0/DCIM -> startsWith() fails and the asset is copied.
+//   - trailing slashes and doubled slashes (file:// joins) also break startsWith.
+function canonicalizePath(p: string): string {
+  let out = stripFileScheme(p);
+  // /sdcard and /storage/self/primary are both the primary external volume.
+  out = out.replace(/^\/sdcard(?=\/|$)/, '/storage/emulated/0');
+  out = out.replace(/^\/storage\/self\/primary(?=\/|$)/, '/storage/emulated/0');
+  // collapse duplicate slashes, then drop any trailing slash
+  out = out.replace(/\/{2,}/g, '/').replace(/\/+$/, '');
+  return out;
+}
+
+// safTreeToFsPath decodes an Android ExternalStorageProvider tree URI into the
+// POSIX path it maps to, so we can tell when a source asset already lives
+// inside the chosen backup folder (e.g. picking DCIM as the target):
+//   content://com.android.externalstorage.documents/tree/primary%3ADCIM
+//     -> /storage/emulated/0/DCIM
+// Returns null for any other authority/scheme where there's no stable mapping
+// (the SD-card UUID form is handled; opaque providers fall through to null and
+// the overlap guard is simply skipped).
+function safTreeToFsPath(folderPath: string): string | null {
+  const prefix = 'content://com.android.externalstorage.documents/tree/';
+  if (!folderPath.startsWith(prefix)) return null;
+  let enc = folderPath.slice(prefix.length);
+  // Tree URIs may carry a trailing /document/<docId>; the tree root is the
+  // part before it.
+  const docIdx = enc.indexOf('/document/');
+  if (docIdx >= 0) enc = enc.slice(0, docIdx);
+  let docId: string;
+  try {
+    docId = decodeURIComponent(enc);
+  } catch {
+    return null;
+  }
+  const colon = docId.indexOf(':');
+  if (colon < 0) return null;
+  const vol = docId.slice(0, colon);
+  const rel = docId.slice(colon + 1);
+  const base = vol === 'primary' ? '/storage/emulated/0' : `/storage/${vol}`;
+  return rel ? `${base}/${rel}` : base;
+}
+
+// resolveTargetRealPath returns the POSIX path of the backup folder so we can
+// detect source assets that already live inside it. Handles both folder kinds:
+// a content:// SAF tree URI (decoded) and a plain filesystem path used by
+// All-Files-Access folders like /storage/emulated/0/DCIM. Returns null only
+// when a content:// URI can't be mapped to a stable path.
+function resolveTargetRealPath(folderPath: string): string | null {
+  const raw = folderPath.startsWith('content://')
+    ? safTreeToFsPath(folderPath)
+    : stripFileScheme(folderPath);
+  return raw == null ? null : canonicalizePath(raw);
+}
+
+// isUnder reports whether path lies inside root (or equals it). Both sides are
+// canonicalized first so symlink aliases (/sdcard) and slash noise don't cause
+// a real overlap to slip through.
+function isUnder(path: string, root: string): boolean {
+  const p = canonicalizePath(path);
+  const r = canonicalizePath(root);
+  return p === r || p.startsWith(r + '/');
+}
+
+// albumFromLocalUri returns the immediate parent folder name of an on-disk
+// asset, which on Android matches the gallery's album (bucket) grouping:
+//   file:///storage/emulated/0/DCIM/Camera/IMG_2020.HEIC -> "Camera"
+// Returns null when the path has no usable parent (e.g. iOS container URIs),
+// in which case byAlbum falls back to the folder root.
+function albumFromLocalUri(localUri?: string): string | null {
+  if (!localUri) return null;
+  const p = stripFileScheme(localUri);
+  const lastSlash = p.lastIndexOf('/');
+  if (lastSlash <= 0) return null;
+  const dir = p.slice(0, lastSlash);
+  const parentSlash = dir.lastIndexOf('/');
+  const name = parentSlash >= 0 ? dir.slice(parentSlash + 1) : dir;
+  return name || null;
+}
+
+function basename(p: string): string {
+  const clean = p.replace(/\/+$/, '');
+  const idx = clean.lastIndexOf('/');
+  return idx >= 0 ? clean.slice(idx + 1) : clean;
+}
+
+// fileNameFor picks the destination filename. The original on-disk name (taken
+// from localUri when available, else asset.filename) is the truest source.
+// When keepOriginalName is off, the file is renamed to a creation-time stamp
+// (2024-08-11_143022.HEIC), preserving the extension, to dodge collisions.
+function fileNameFor(
+  asset: MediaLibrary.Asset,
+  localUri: string | undefined,
+  keepOriginalName: boolean,
+): string {
+  const original = (localUri ? basename(stripFileScheme(localUri)) : '') || asset.filename;
+  if (keepOriginalName) return original;
+
+  const raw = asset.creationTime;
+  const date = new Date(raw < 1e12 ? raw * 1000 : raw);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const stamp =
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+    `_${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`;
+  const ext = original.match(/\.[^./]+$/)?.[0] ?? '';
+  return `${stamp}${ext}`;
+}
+
 function destPath(
   asset: MediaLibrary.Asset,
   structure: FolderStructure,
+  album: string | null,
+  name: string,
 ): string {
-  const name = asset.filename;
   // creationTime is milliseconds on iOS, seconds on some Android versions
   const raw = asset.creationTime;
   const date = new Date(raw < 1e12 ? raw * 1000 : raw);
@@ -81,6 +222,8 @@ function destPath(
       const m = String(date.getMonth() + 1).padStart(2, '0');
       return `${y}/${m}/${name}`;
     }
+    case 'byAlbum':
+      return album ? `${album}/${name}` : name;
     case 'flat':
     default:
       return name;
@@ -170,11 +313,33 @@ export async function runBackup(
   const plainPath = folderPath.replace(/^file:\/\//, '');
   const folderUri = `file://${plainPath}`;
 
+  // When the backup target overlaps the media source (e.g. the user picks
+  // DCIM or Pictures), copying gallery assets back into it would just create
+  // duplicates. Resolve the target to a real path so we can skip any asset
+  // that already lives inside it. null = not an external-storage folder, so
+  // no overlap is possible and the guard is a no-op.
+  const targetRealPath = resolveTargetRealPath(folderPath);
+
+  // Assets verified present in the backup folder this run (freshly copied or
+  // already on disk). When "move" is on, these originals get deleted at the end.
+  // Overlap-skipped assets (source already inside the target) are deliberately
+  // excluded — deleting them would remove the backup itself.
+  const deletable: MediaLibrary.Asset[] = [];
+
   for (const asset of toBackUp) {
     if (signal?.cancelled) break;
 
     try {
       const info = await MediaLibrary.getAssetInfoAsync(asset);
+
+      const srcLocalPath = info.localUri ? stripFileScheme(info.localUri) : null;
+      if (targetRealPath && srcLocalPath && isUnder(srcLocalPath, targetRealPath)) {
+        backedUp.add(asset.id);
+        progress.skipped++;
+        progress.lastSkipReason = `"${asset.filename}" already in backup folder`;
+        onProgress({ ...progress });
+        continue;
+      }
 
       // Build a list of candidate source URIs. localUri is preferred
       // (it's a file:// path for on-device assets). asset.uri is the
@@ -190,7 +355,8 @@ export async function runBackup(
         continue;
       }
 
-      const rel = destPath(asset, config.structure);
+      const fileName = fileNameFor(asset, info.localUri, config.keepOriginalName ?? true);
+      const rel = destPath(asset, config.structure, albumFromLocalUri(info.localUri), fileName);
       const targetUri = `${folderUri}/${rel}`;
 
       const lastSlash = targetUri.lastIndexOf('/');
@@ -206,6 +372,7 @@ export async function runBackup(
       const exists = await FileSystem.getInfoAsync(targetUri);
       if (exists.exists) {
         backedUp.add(asset.id);
+        deletable.push(asset);
         progress.skipped++;
         progress.lastSkipReason = `"${asset.filename}" already on disk`;
         onProgress({ ...progress });
@@ -217,6 +384,27 @@ export async function runBackup(
       // any path the daemon can write to.
       let copied = false;
       let lastErr = '';
+
+      // Final overlap check against the actual file we're about to copy. The
+      // early guard uses info.localUri, but the real source can differ (e.g.
+      // expo falls back to asset.uri); skipping here guarantees we never copy a
+      // file that already lives inside the backup folder, regardless of which
+      // candidate URI ends up being the source.
+      let overlap = false;
+      for (const sourceUri of candidates) {
+        if (!sourceUri.startsWith('file://')) continue;
+        if (targetRealPath && isUnder(stripFileScheme(sourceUri), targetRealPath)) {
+          overlap = true;
+          break;
+        }
+      }
+      if (overlap) {
+        backedUp.add(asset.id);
+        progress.skipped++;
+        progress.lastSkipReason = `"${asset.filename}" already in backup folder`;
+        onProgress({ ...progress });
+        continue;
+      }
 
       for (const sourceUri of candidates) {
         if (copied) break;
@@ -234,6 +422,7 @@ export async function runBackup(
 
       if (copied) {
         backedUp.add(asset.id);
+        deletable.push(asset);
         progress.copied++;
       } else {
         progress.skipped++;
@@ -252,6 +441,22 @@ export async function runBackup(
   }
 
   await saveBackedUpIds(backedUp);
+
+  // Move mode: delete originals that are now safely in the backup folder. One
+  // batched call = at most one system consent dialog (and none at all when All
+  // Files Access is granted, so it also works on a headless background run).
+  if (config.deleteAfterBackup && deletable.length > 0 && !signal?.cancelled) {
+    try {
+      await MediaLibrary.deleteAssetsAsync(deletable);
+      progress.deleted = deletable.length;
+    } catch (e) {
+      // Consent denied or no Activity (headless without All Files Access).
+      // Originals stay; the copy already succeeded, so this is non-fatal.
+      progress.lastSkipReason = `delete skipped: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    onProgress({ ...progress });
+  }
+
   progress.phase = 'done';
   onProgress({ ...progress });
   return progress;

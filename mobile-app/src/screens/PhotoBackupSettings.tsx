@@ -22,6 +22,11 @@ import {
   runBackup,
   saveConfig,
 } from '../services/PhotoBackup';
+import {
+  DEFAULT_INTERVAL_MINUTES,
+  disableAutoBackup,
+  enableAutoBackup,
+} from '../services/photoBackupTask';
 
 interface Props {
   onBack: () => void;
@@ -31,12 +36,20 @@ const STRUCTURES: { value: FolderStructure; label: string; example: string }[] =
   { value: 'flat', label: 'All in one folder', example: 'IMG_2020.HEIC' },
   { value: 'byDate', label: 'By date', example: '2024-08-11/IMG_2020.HEIC' },
   { value: 'byYearMonth', label: 'By year/month', example: '2024/08/IMG_2020.HEIC' },
+  { value: 'byAlbum', label: 'By album', example: 'Camera/IMG_2020.HEIC' },
 ];
 
 const FILTERS: { value: MediaFilter; label: string }[] = [
   { value: 'all', label: 'Photos & Videos' },
   { value: 'photo', label: 'Photos only' },
   { value: 'video', label: 'Videos only' },
+];
+
+// OS floor is ~15 min on Android; iOS runs opportunistically regardless.
+const INTERVALS: { value: number; label: string }[] = [
+  { value: 60, label: 'Hourly' },
+  { value: 360, label: 'Every 6 hours' },
+  { value: 1440, label: 'Daily' },
 ];
 
 export function PhotoBackupSettings({ onBack }: Props) {
@@ -82,6 +95,7 @@ export function PhotoBackupSettings({ onBack }: Props) {
           {
             text: 'Disable',
             onPress: () => {
+              disableAutoBackup().catch(() => {});
               clearConfig().catch(() => {});
               setConfig(null);
             },
@@ -135,6 +149,43 @@ export function PhotoBackupSettings({ onBack }: Props) {
 
   const cancelBackup = () => {
     cancelRef.current.cancelled = true;
+  };
+
+  const toggleAutoBackup = (value: boolean) => {
+    const interval = config?.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES;
+    updateConfig({ autoBackup: value, intervalMinutes: interval });
+    if (value) {
+      enableAutoBackup(interval).catch(() => {});
+    } else {
+      disableAutoBackup().catch(() => {});
+    }
+  };
+
+  const toggleMove = (value: boolean) => {
+    if (value) {
+      Alert.alert(
+        'Move instead of copy?',
+        'After each file is safely in the backup folder, the original is DELETED from your gallery. Without "All files access" Android asks you to confirm each batch; in background it stays a copy until granted.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Enable move',
+            style: 'destructive',
+            onPress: () => updateConfig({ deleteAfterBackup: true }),
+          },
+        ],
+      );
+    } else {
+      updateConfig({ deleteAfterBackup: false });
+    }
+  };
+
+  const selectInterval = (minutes: number) => {
+    updateConfig({ intervalMinutes: minutes });
+    if (config?.autoBackup) {
+      // re-register so the new cadence takes effect
+      enableAutoBackup(minutes).catch(() => {});
+    }
   };
 
   const selectedFolder = folders.find(f => f.id === config?.folderId);
@@ -218,6 +269,21 @@ export function PhotoBackupSettings({ onBack }: Props) {
               })}
             </View>
 
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Keep original filename</Text>
+                <Text style={styles.toggleHint}>
+                  On = keep the file's own name (IMG_2020.HEIC). Off = rename to its
+                  capture time (2024-08-11_143022.HEIC) to avoid name clashes.
+                </Text>
+              </View>
+              <Switch
+                value={config.keepOriginalName ?? true}
+                onValueChange={v => updateConfig({ keepOriginalName: v })}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
             <Text style={styles.sectionLabel}>Include</Text>
             <View style={styles.optionGroup}>
               {FILTERS.map(f => {
@@ -236,6 +302,60 @@ export function PhotoBackupSettings({ onBack }: Props) {
                 );
               })}
             </View>
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Move (delete original)</Text>
+                <Text style={styles.toggleHint}>
+                  Remove each photo/video from the gallery after it's copied to the
+                  backup folder. Off = keep a copy in both places.
+                </Text>
+              </View>
+              <Switch
+                value={config.deleteAfterBackup ?? false}
+                onValueChange={toggleMove}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Automatic backup</Text>
+                <Text style={styles.toggleHint}>
+                  Run periodically in the background. The system decides the exact
+                  timing (≥15 min on Android; opportunistic on iOS).
+                </Text>
+              </View>
+              <Switch
+                value={config.autoBackup ?? false}
+                onValueChange={toggleAutoBackup}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
+            {config.autoBackup && (
+              <>
+                <Text style={styles.sectionLabel}>Frequency</Text>
+                <View style={styles.optionGroup}>
+                  {INTERVALS.map(it => {
+                    const active =
+                      (config.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES) === it.value;
+                    return (
+                      <Focusable
+                        key={it.value}
+                        style={[styles.optionRow, active && styles.optionRowActive]}
+                        onPress={() => selectInterval(it.value)}
+                      >
+                        <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                          {it.label}
+                        </Text>
+                        {active && <Text style={styles.check}>✓</Text>}
+                      </Focusable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             {progress && (
               <View style={styles.progressCard}>
@@ -268,7 +388,8 @@ export function PhotoBackupSettings({ onBack }: Props) {
                 {progress.phase === 'done' && (
                   <>
                     <Text style={styles.progressDone}>
-                      Done. {progress.copied} copied, {progress.skipped} skipped.
+                      Done. {progress.copied} copied, {progress.skipped} skipped
+                      {progress.deleted ? `, ${progress.deleted} moved` : ''}.
                     </Text>
                     {progress.lastSkipReason ? (
                       <Text style={styles.skipReason}>Last skip: {progress.lastSkipReason}</Text>
@@ -328,6 +449,10 @@ function defaultConfig(folders: FolderConfig[]): PhotoBackupConfig {
     folderLabel: f?.label || f?.id || '',
     structure: 'byDate',
     mediaFilter: 'all',
+    autoBackup: false,
+    intervalMinutes: DEFAULT_INTERVAL_MINUTES,
+    deleteAfterBackup: false,
+    keepOriginalName: true,
   };
 }
 
