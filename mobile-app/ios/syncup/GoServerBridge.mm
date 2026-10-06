@@ -267,6 +267,18 @@ facebook::jsi::String GoServerBridgeImpl::importConfig(facebook::jsi::Runtime &r
     NSString *result = [GoBridgeWrapper importConfig:(pw ?: @"")] ?: @"";
     return facebook::jsi::String::createFromUtf8(rt, [result UTF8String]);
 }
+
+facebook::jsi::String GoServerBridgeImpl::getSystemLog(facebook::jsi::Runtime &rt, facebook::jsi::String since, double limit) {
+    NSString *s = [NSString stringWithUTF8String:since.utf8(rt).c_str()];
+    NSString *result = [GoBridgeWrapper getSystemLog:(s ?: @"") limit:(NSInteger)limit] ?: @"";
+    return facebook::jsi::String::createFromUtf8(rt, [result UTF8String]);
+}
+
+facebook::jsi::String GoServerBridgeImpl::writeSystemLog(facebook::jsi::Runtime &rt, facebook::jsi::String dstPath) {
+    NSString *p = [NSString stringWithUTF8String:dstPath.utf8(rt).c_str()];
+    NSString *result = [GoBridgeWrapper writeSystemLog:(p ?: @"")] ?: @"";
+    return facebook::jsi::String::createFromUtf8(rt, [result UTF8String]);
+}
 #endif
 
 @implementation GoServerBridge

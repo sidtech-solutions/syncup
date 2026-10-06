@@ -137,6 +137,7 @@ func (m *MobileAPI) StartServer(dataDir string) int {
 		return 0
 	}
 	globalClient = c
+	serverStartedAt = time.Now()
 	return c.Port()
 }
 
@@ -148,6 +149,7 @@ func (m *MobileAPI) StopServer() {
 	}
 	globalClient.Stop()
 	globalClient = nil
+	serverStartedAt = time.Time{}
 }
 
 func (m *MobileAPI) GetServerPort() int {

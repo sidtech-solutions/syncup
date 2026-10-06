@@ -42,3 +42,9 @@ Bumping the syncthing pin in `go.mod` means re-checking every patch here.
   adds `?limit=N` to `/rest/system/log` so the live log view can ask for just
   the tail of that buffer, and includes the level in `/rest/system/log.txt`
   (the endpoint the app streams to a file when a user exports their log).
+- `0002-in-process-log-access.patch` — adds `lib/syncthing/mobilelog.go`, which
+  exposes the global log recorder (an `internal/` package, so the wrapper can't
+  import it directly) in the same JSON and text shapes as `/rest/system/log`
+  and `/rest/system/log.txt`. The app's log view and export call this through
+  gomobile instead of HTTP, so they work when the daemon failed to start or
+  the device drops loopback traffic (siddarthkay/syncup#73).

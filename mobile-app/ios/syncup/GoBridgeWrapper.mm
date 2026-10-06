@@ -67,6 +67,8 @@ static NSString * const kNotifiedVaultStaleKey = @"com.siddarthkay.syncup.notifi
 - (void)unregisterExternalRoot:(NSString *)path;
 - (NSString *)exportConfig:(NSString *)srcDataDir dstZipPath:(NSString *)dstZipPath extrasJSON:(NSString *)extrasJSON;
 - (NSString *)importConfig:(NSString *)srcZipPath dstDataDir:(NSString *)dstDataDir password:(NSString *)password;
+- (NSString *)getSystemLog:(NSString *)since limit:(long)limit;
+- (NSString *)writeSystemLog:(NSString *)dstPath;
 @end
 
 static Class GobridgeMobileAPIClass;
@@ -654,6 +656,26 @@ static Class GobridgeMobileAPIClass;
   } @catch (NSException *exception) {
     NSLog(@"GoBridgeWrapper: importConfig exception: %@", exception);
     return [self errorJSON:exception.reason ?: @"exception"];
+  }
+}
+
++ (NSString *)getSystemLog:(NSString *)since limit:(NSInteger)limit {
+  @try {
+    id api = [self api];
+    if (!api) return @"{\"error\":\"bridge not initialized\"}";
+    return [api getSystemLog:(since ?: @"") limit:(long)limit] ?: @"{\"messages\":[]}";
+  } @catch (NSException *exception) {
+    return @"{\"error\":\"exception\"}";
+  }
+}
+
++ (NSString *)writeSystemLog:(NSString *)dstPath {
+  @try {
+    id api = [self api];
+    if (!api) return @"{\"error\":\"bridge not initialized\"}";
+    return [api writeSystemLog:(dstPath ?: @"")] ?: @"{\"error\":\"nil result\"}";
+  } @catch (NSException *exception) {
+    return @"{\"error\":\"exception\"}";
   }
 }
 

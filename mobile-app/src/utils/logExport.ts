@@ -1,10 +1,11 @@
-import type { SystemStatus, SystemVersion } from '../api/types';
-
 export interface LogFileMeta {
-  version?: SystemVersion | null;
-  status?: SystemStatus | null;
-  platform?: string | null;
   exportedAt: string;
+  platform?: string | null;
+  syncthingVersion?: string | null;
+  build?: string | null;
+  deviceId?: string | null;
+  uptimeSec?: number | null;
+  goroutines?: number | null;
   logBytes?: number | null;
 }
 
@@ -30,11 +31,11 @@ export function formatLogHeader(meta: LogFileMeta): string {
     '# SyncUp daemon log',
     `exported: ${meta.exportedAt}`,
     meta.platform ? `platform: ${meta.platform}` : null,
-    meta.version ? `syncthing: ${meta.version.longVersion}` : null,
-    meta.version ? `build: ${meta.version.os}/${meta.version.arch}` : null,
-    meta.status ? `device id: ${meta.status.myID}` : null,
-    meta.status ? `uptime: ${meta.status.uptime}s` : null,
-    meta.status ? `goroutines: ${meta.status.goroutines}` : null,
+    meta.syncthingVersion ? `syncthing: ${meta.syncthingVersion}` : null,
+    meta.build ? `build: ${meta.build}` : null,
+    meta.deviceId ? `device id: ${meta.deviceId}` : null,
+    meta.uptimeSec ? `uptime: ${meta.uptimeSec}s` : null,
+    meta.goroutines ? `goroutines: ${meta.goroutines}` : null,
     meta.logBytes != null ? `log size: ${formatBytes(meta.logBytes)}` : null,
     '',
   ]
