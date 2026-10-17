@@ -1,7 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import * as MediaLibrary from 'expo-media-library/legacy';
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  Platform,
   ScrollView,
   StyleSheet,
   Switch,
@@ -18,10 +21,16 @@ import {
   type MediaFilter,
   type PhotoBackupConfig,
   clearConfig,
+  isInFolders,
   loadConfig,
   runBackup,
   saveConfig,
 } from '../services/PhotoBackup';
+import {
+  DEFAULT_INTERVAL_MINUTES,
+  disableAutoBackup,
+  enableAutoBackup,
+} from '../services/photoBackupTask';
 
 interface Props {
   onBack: () => void;
@@ -31,12 +40,20 @@ const STRUCTURES: { value: FolderStructure; label: string; example: string }[] =
   { value: 'flat', label: 'All in one folder', example: 'IMG_2020.HEIC' },
   { value: 'byDate', label: 'By date', example: '2024-08-11/IMG_2020.HEIC' },
   { value: 'byYearMonth', label: 'By year/month', example: '2024/08/IMG_2020.HEIC' },
+  { value: 'byAlbum', label: 'By album', example: 'Camera/IMG_2020.HEIC' },
 ];
 
 const FILTERS: { value: MediaFilter; label: string }[] = [
   { value: 'all', label: 'Photos & Videos' },
   { value: 'photo', label: 'Photos only' },
   { value: 'video', label: 'Videos only' },
+];
+
+// OS floor is ~15 min on Android; iOS runs opportunistically regardless.
+const INTERVALS: { value: number; label: string }[] = [
+  { value: 60, label: 'Hourly' },
+  { value: 360, label: 'Every 6 hours' },
+  { value: 1440, label: 'Daily' },
 ];
 
 export function PhotoBackupSettings({ onBack }: Props) {
@@ -46,6 +63,9 @@ export function PhotoBackupSettings({ onBack }: Props) {
   const [loading, setLoading] = useState(true);
   const [progress, setProgress] = useState<BackupProgress | null>(null);
   const cancelRef = useRef({ cancelled: false });
+  const [albums, setAlbums] = useState<{ album: MediaLibrary.Album; preview?: string }[] | null>(
+    null,
+  );
 
   useEffect(() => {
     (async () => {
@@ -58,6 +78,38 @@ export function PhotoBackupSettings({ onBack }: Props) {
       setLoading(false);
     })();
   }, [client]);
+
+  const byAlbum = config?.structure === 'byAlbum';
+  useEffect(() => {
+    if (!byAlbum || albums || loading) return;
+    (async () => {
+      const { status } = await MediaLibrary.requestPermissionsAsync();
+      if (status !== 'granted') return setAlbums([]);
+      const list = await MediaLibrary.getAlbumsAsync().catch(() => [] as MediaLibrary.Album[]);
+      const folderPaths = folders.map(f => f.path);
+      const rows = await Promise.all(
+        list.map(async album => {
+          // The newest asset doubles as the thumbnail and tells us where the
+          // album lives on disk (Android albums are single directories).
+          const first = await MediaLibrary.getAssetsAsync({
+            album,
+            first: 1,
+            sortBy: [[MediaLibrary.SortBy.creationTime, false]],
+          }).catch(() => null);
+          const asset = first?.assets[0];
+          if (!asset) return { album };
+          const info = await MediaLibrary.getAssetInfoAsync(asset).catch(() => null);
+          if (info?.localUri && isInFolders(info.localUri, folderPaths)) return null;
+          return { album, preview: thumbUri(asset) };
+        }),
+      );
+      setAlbums(
+        rows
+          .filter(r => r != null)
+          .sort((a, b) => a.album.title.localeCompare(b.album.title)),
+      );
+    })();
+  }, [byAlbum, albums, loading, folders]);
 
   const enabled = config?.enabled ?? false;
 
@@ -82,6 +134,7 @@ export function PhotoBackupSettings({ onBack }: Props) {
           {
             text: 'Disable',
             onPress: () => {
+              disableAutoBackup().catch(() => {});
               clearConfig().catch(() => {});
               setConfig(null);
             },
@@ -123,7 +176,13 @@ export function PhotoBackupSettings({ onBack }: Props) {
       }
     };
 
-    const result = await runBackup(config, setProgress, cancelRef.current, refreshPath);
+    const result = await runBackup(
+      config,
+      setProgress,
+      cancelRef.current,
+      refreshPath,
+      folders.map(f => f.path),
+    );
     if (result.phase === 'done' && result.copied > 0) {
       try {
         await client.scanFolder(config.folderId);
@@ -135,6 +194,43 @@ export function PhotoBackupSettings({ onBack }: Props) {
 
   const cancelBackup = () => {
     cancelRef.current.cancelled = true;
+  };
+
+  const toggleAutoBackup = (value: boolean) => {
+    const interval = config?.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES;
+    updateConfig({ autoBackup: value, intervalMinutes: interval });
+    if (value) {
+      enableAutoBackup(interval).catch(() => {});
+    } else {
+      disableAutoBackup().catch(() => {});
+    }
+  };
+
+  const toggleMove = (value: boolean) => {
+    if (value) {
+      Alert.alert(
+        'Move instead of copy?',
+        'After each file is safely in the backup folder, the original is DELETED from your gallery. Without "All files access" Android asks you to confirm each batch; in background it stays a copy until granted.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Enable move',
+            style: 'destructive',
+            onPress: () => updateConfig({ deleteAfterBackup: true }),
+          },
+        ],
+      );
+    } else {
+      updateConfig({ deleteAfterBackup: false });
+    }
+  };
+
+  const selectInterval = (minutes: number) => {
+    updateConfig({ intervalMinutes: minutes });
+    if (config?.autoBackup) {
+      // re-register so the new cadence takes effect
+      enableAutoBackup(minutes).catch(() => {});
+    }
   };
 
   const selectedFolder = folders.find(f => f.id === config?.folderId);
@@ -218,6 +314,72 @@ export function PhotoBackupSettings({ onBack }: Props) {
               })}
             </View>
 
+            {byAlbum && (
+              <>
+                <Text style={styles.sectionLabel}>Albums</Text>
+                <Text style={styles.toggleHint}>
+                  Pick the albums to back up. None selected = all albums. Albums inside
+                  folders you already sync are hidden and skipped.
+                </Text>
+                {albums === null ? (
+                  <ActivityIndicator color={colors.accent} />
+                ) : albums.length === 0 ? (
+                  <Text style={styles.toggleHint}>No albums found (check photo permission).</Text>
+                ) : (
+                  <View style={styles.optionGroup}>
+                    {albums.map(({ album: a, preview }) => {
+                      const selected = config.albumIds?.includes(a.id) ?? false;
+                      return (
+                        <Focusable
+                          key={a.id}
+                          style={[styles.optionRow, selected && styles.optionRowActive]}
+                          onPress={() =>
+                            updateConfig({
+                              albumIds: selected
+                                ? config.albumIds!.filter(id => id !== a.id)
+                                : [...(config.albumIds ?? []), a.id],
+                            })
+                          }
+                        >
+                          {preview ? (
+                            <Image
+                              source={{ uri: preview }}
+                              style={styles.albumThumb}
+                              resizeMethod="resize"
+                            />
+                          ) : (
+                            <View style={styles.albumThumb} />
+                          )}
+                          <View style={{ flex: 1 }}>
+                            <Text style={[styles.optionText, selected && styles.optionTextActive]}>
+                              {a.title}
+                            </Text>
+                            <Text style={styles.optionExample}>{a.assetCount} items</Text>
+                          </View>
+                          {selected && <Text style={styles.check}>✓</Text>}
+                        </Focusable>
+                      );
+                    })}
+                  </View>
+                )}
+              </>
+            )}
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Keep original filename</Text>
+                <Text style={styles.toggleHint}>
+                  On = keep the file's own name (IMG_2020.HEIC). Off = rename to its
+                  capture time (2024-08-11_143022.HEIC) to avoid name clashes.
+                </Text>
+              </View>
+              <Switch
+                value={config.keepOriginalName ?? true}
+                onValueChange={v => updateConfig({ keepOriginalName: v })}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
             <Text style={styles.sectionLabel}>Include</Text>
             <View style={styles.optionGroup}>
               {FILTERS.map(f => {
@@ -236,6 +398,75 @@ export function PhotoBackupSettings({ onBack }: Props) {
                 );
               })}
             </View>
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Move (delete original)</Text>
+                <Text style={styles.toggleHint}>
+                  Remove each photo/video from the gallery after it's copied to the
+                  backup folder. Off = keep a copy in both places.
+                </Text>
+              </View>
+              <Switch
+                value={config.deleteAfterBackup ?? false}
+                onValueChange={toggleMove}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Overwrite existing files</Text>
+                <Text style={styles.toggleHint}>
+                  On = copy again over a file with the same name in the backup folder. Off =
+                  keep the existing file and skip the photo.
+                </Text>
+              </View>
+              <Switch
+                value={config.overwriteExisting ?? false}
+                onValueChange={v => updateConfig({ overwriteExisting: v })}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.toggleLabel}>Automatic backup</Text>
+                <Text style={styles.toggleHint}>
+                  Run periodically in the background. The system decides the exact
+                  timing (≥15 min on Android; opportunistic on iOS).
+                </Text>
+              </View>
+              <Switch
+                value={config.autoBackup ?? false}
+                onValueChange={toggleAutoBackup}
+                trackColor={{ true: colors.accent, false: colors.border }}
+              />
+            </View>
+
+            {config.autoBackup && (
+              <>
+                <Text style={styles.sectionLabel}>Frequency</Text>
+                <View style={styles.optionGroup}>
+                  {INTERVALS.map(it => {
+                    const active =
+                      (config.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES) === it.value;
+                    return (
+                      <Focusable
+                        key={it.value}
+                        style={[styles.optionRow, active && styles.optionRowActive]}
+                        onPress={() => selectInterval(it.value)}
+                      >
+                        <Text style={[styles.optionText, active && styles.optionTextActive]}>
+                          {it.label}
+                        </Text>
+                        {active && <Text style={styles.check}>✓</Text>}
+                      </Focusable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
 
             {progress && (
               <View style={styles.progressCard}>
@@ -268,7 +499,8 @@ export function PhotoBackupSettings({ onBack }: Props) {
                 {progress.phase === 'done' && (
                   <>
                     <Text style={styles.progressDone}>
-                      Done. {progress.copied} copied, {progress.skipped} skipped.
+                      Done. {progress.copied} copied, {progress.skipped} skipped
+                      {progress.deleted ? `, ${progress.deleted} moved` : ''}.
                     </Text>
                     {progress.lastSkipReason ? (
                       <Text style={styles.skipReason}>Last skip: {progress.lastSkipReason}</Text>
@@ -319,6 +551,15 @@ function Header({ onBack }: { onBack: () => void }) {
   );
 }
 
+// On Android asset.uri is a raw file path that the image loader may not be
+// allowed to read; the MediaStore content URI works under the media permission
+// and also yields thumbnails for videos.
+function thumbUri(asset: MediaLibrary.Asset): string {
+  if (Platform.OS !== 'android') return asset.uri;
+  const kind = asset.mediaType === MediaLibrary.MediaType.video ? 'video' : 'images';
+  return `content://media/external/${kind}/media/${asset.id}`;
+}
+
 function defaultConfig(folders: FolderConfig[]): PhotoBackupConfig {
   const f = folders[0];
   return {
@@ -328,6 +569,10 @@ function defaultConfig(folders: FolderConfig[]): PhotoBackupConfig {
     folderLabel: f?.label || f?.id || '',
     structure: 'byDate',
     mediaFilter: 'all',
+    autoBackup: false,
+    intervalMinutes: DEFAULT_INTERVAL_MINUTES,
+    deleteAfterBackup: false,
+    keepOriginalName: true,
   };
 }
 
@@ -382,6 +627,13 @@ const styles = StyleSheet.create({
   optionRowActive: {},
   optionText: { color: colors.text, fontSize: 14, flex: 1 },
   optionTextActive: { fontWeight: '600' },
+  albumThumb: {
+    width: 44,
+    height: 44,
+    borderRadius: 6,
+    marginRight: 12,
+    backgroundColor: colors.border,
+  },
   optionExample: { color: colors.textDim, fontSize: 11, fontFamily: 'Menlo', marginTop: 2 },
   check: { color: colors.accent, fontSize: 16, fontWeight: '700' },
   progressCard: {

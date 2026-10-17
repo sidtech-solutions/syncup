@@ -361,6 +361,55 @@ func (c *Client) FoldersRoot() string {
 	return filepath.Join(c.dataDir, "folders")
 }
 
+// folderFSPaths returns the POSIX Path of every configured folder that uses a
+// real filesystem path (not a content:// SAF tree URI). CopyFile treats these
+// as extra sandbox roots so photo backup can write into a folder the daemon
+// already syncs — e.g. an All-Files-Access DCIM folder outside foldersRoot.
+func (c *Client) folderFSPaths() []string {
+	c.mu.Lock()
+	cfg := c.config
+	c.mu.Unlock()
+	if cfg == nil {
+		return nil
+	}
+	var paths []string
+	for _, f := range cfg.Folders() {
+		if f.Path == "" || strings.HasPrefix(f.Path, "content://") {
+			continue
+		}
+		paths = append(paths, f.Path)
+	}
+	return paths
+}
+
+// safTreeForPath resolves a content:// destination to the tree URI of the SAF
+// folder that contains it plus the path relative to that folder's root. ok is
+// false when no configured SAF folder is a parent of p. Used by CopyFile so
+// photo backup can write into SAF-backed folders, whose Path is an opaque
+// content:// tree URI rather than a POSIX path. Unexported so gomobile doesn't
+// try to bind its three-value return (bind allows at most one value + error).
+func (c *Client) safTreeForPath(p string) (treeURI, rel string, ok bool) {
+	c.mu.Lock()
+	cfg := c.config
+	c.mu.Unlock()
+	if cfg == nil {
+		return "", "", false
+	}
+	for _, f := range cfg.Folders() {
+		if f.FilesystemType != config.FilesystemType(FilesystemTypeSAF) {
+			continue
+		}
+		root := f.Path
+		if p == root {
+			return root, "", true
+		}
+		if strings.HasPrefix(p, root+"/") {
+			return root, strings.TrimPrefix(p, root+"/"), true
+		}
+	}
+	return "", "", false
+}
+
 // SetFoldersRoot updates the base dir + sandbox allow-list. Existing folder
 // configs keep their stored paths; migration happens in Load.
 func (c *Client) SetFoldersRoot(path string) error {
