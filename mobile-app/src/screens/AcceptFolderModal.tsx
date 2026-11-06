@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { AppState, Platform, StyleSheet, Text, View } from 'react-native';
 import { Focusable } from '../components/Focusable';
 import { FormModal } from '../components/FormModal';
 import { colors } from '../components/ui';
 import { useSyncthing, useSyncthingClient } from '../daemon/SyncthingContext';
 import type { DeviceConfig, FolderConfig, PendingFolderOffer } from '../api/types';
 import { isAbortError } from '../api/syncthing';
+import GoBridge from '../GoServerBridgeJSI';
 import { FolderPicker } from './FolderPicker';
+import { AndroidLocalBrowser } from './AndroidLocalBrowser';
 import { FolderTypePicker } from '../components/FolderTypePicker';
+import { FolderLocationPicker, type LocationKind } from '../components/FolderLocationPicker';
 import {
   filesystemTypeForExternal,
   pickExternalFolderWithICloudWarning,
@@ -34,6 +37,19 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
   const [isExternal, setIsExternal] = useState(false);
   const [externalDisplayName, setExternalDisplayName] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [localBrowserOpen, setLocalBrowserOpen] = useState(false);
+  // When MANAGE_EXTERNAL_STORAGE is granted the primary picker is the
+  // full-screen native browser (POSIX); SAF stays as the alternate route for
+  // cloud / SD-card. Mirrors AddFolderModal so accepting a shared folder has
+  // the same location choices as adding one.
+  const [hasAllFilesAccess, setHasAllFilesAccess] = useState(() => {
+    if (Platform.OS !== 'android') return true;
+    try {
+      return GoBridge.hasAllFilesAccess();
+    } catch {
+      return false;
+    }
+  });
   const [allDevices, setAllDevices] = useState<DeviceConfig[]>([]);
   const [extraPeers, setExtraPeers] = useState<Set<string>>(new Set());
   const [folderType, setFolderType] = useState<FolderConfig['type']>('sendreceive');
@@ -46,6 +62,7 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
     setPath('');
     setIsExternal(false);
     setExternalDisplayName('');
+    setLocalBrowserOpen(false);
     setExtraPeers(new Set());
     // encrypted slot from the peer => receiveencrypted, else two-way
     setFolderType(offer?.receiveEncrypted ? 'receiveencrypted' : 'sendreceive');
@@ -54,6 +71,24 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
     setSubmitting(false);
     client.devices().then(setAllDevices).catch(e => setError(String(e)));
   }, [visible, offer, client]);
+
+  // Re-check All Files Access on foreground — the user grants it in system
+  // settings and returns via app resume.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const refresh = () => {
+      try {
+        setHasAllFilesAccess(GoBridge.hasAllFilesAccess());
+      } catch {
+        // leave previous value
+      }
+    };
+    if (visible) refresh();
+    const sub = AppState.addEventListener('change', state => {
+      if (state === 'active') refresh();
+    });
+    return () => sub.remove();
+  }, [visible]);
 
   const pickerRoot = info?.foldersRoot ?? '';
 
@@ -70,6 +105,32 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
     }
   };
 
+  // Device card: full-screen native browser on Android (All Files Access is
+  // already confirmed by the card), document picker on iOS.
+  const pickDevice = () => {
+    if (Platform.OS === 'android') {
+      setLocalBrowserOpen(true);
+      return;
+    }
+    pickExternal();
+  };
+
+  const onLocalBrowserPick = (chosen: string) => {
+    setLocalBrowserOpen(false);
+    setPath(chosen);
+    setIsExternal(true);
+    const name = chosen.split('/').filter(Boolean).pop() || 'Device folder';
+    setExternalDisplayName(name);
+  };
+
+  const requestAllFilesAccess = () => {
+    try {
+      GoBridge.requestAllFilesAccess();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   const displayPath = useMemo(() => {
     if (!path) return '';
     if (isExternal) return externalDisplayName || 'Device folder';
@@ -79,6 +140,15 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
     }
     return path;
   }, [path, pickerRoot, isExternal, externalDisplayName]);
+
+  // Which destination card is currently active (drives the unified picker UI).
+  const locationKind: LocationKind | null = !path
+    ? null
+    : !isExternal
+      ? 'app'
+      : path.startsWith('content://')
+        ? 'saf'
+        : 'device';
 
   const otherPeers = useMemo(
     () =>
@@ -184,7 +254,7 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
   return (
     <>
       <FormModal
-        visible={visible && !pickerOpen}
+        visible={visible && !pickerOpen && !localBrowserOpen}
         title="Accept folder"
         onCancel={cancel}
         onSubmit={submit}
@@ -199,42 +269,16 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
         </View>
 
         <Text style={styles.sectionLabel}>Where to store it</Text>
-        <Focusable
-          style={[styles.pickerBtn, !path && styles.pickerBtnEmpty]}
-          onPress={pickExternal}
-        >
-          <Text style={[styles.pickerBtnText, !path && styles.pickerBtnTextEmpty]} numberOfLines={2}>
-            {displayPath || 'Pick a folder on this device…'}
-          </Text>
-          <Text style={styles.pickerArrow}>›</Text>
-        </Focusable>
-        <Text style={styles.hint}>
-          {isExternal
-            ? 'Files from the peer will sync directly with this device folder.'
-            : path
-              ? 'Files from the peer will be stored in this app-managed directory.'
-              : 'Pick any folder on your device, or tap below to use app storage.'}
-        </Text>
-        {isExternal ? (
-          <Focusable
-            style={styles.safBtn}
-            onPress={() => {
-              setIsExternal(false);
-              setPath('');
-              setExternalDisplayName('');
-            }}
-          >
-            <Text style={styles.safBtnText}>Use app storage instead</Text>
-          </Focusable>
-        ) : (
-          <Focusable
-            style={styles.safBtn}
-            onPress={() => setPickerOpen(true)}
-            disabled={!pickerRoot}
-          >
-            <Text style={styles.safBtnText}>Use app storage instead</Text>
-          </Focusable>
-        )}
+        <FolderLocationPicker
+          selected={locationKind}
+          chosenLabel={displayPath}
+          hasAllFilesAccess={hasAllFilesAccess}
+          appDisabled={!pickerRoot}
+          onPickApp={() => setPickerOpen(true)}
+          onPickDevice={pickDevice}
+          onPickSaf={pickExternal}
+          onRequestAllFilesAccess={requestAllFilesAccess}
+        />
 
         <Text style={[styles.sectionLabel, { marginTop: 20 }]}>Folder kind</Text>
         <View style={styles.presetRow}>
@@ -292,6 +336,14 @@ export function AcceptFolderModal({ visible, offer, onClose, onAccepted }: Props
           setPickerOpen(false);
         }}
       />
+
+      {Platform.OS === 'android' && (
+        <AndroidLocalBrowser
+          visible={localBrowserOpen}
+          onCancel={() => setLocalBrowserOpen(false)}
+          onPick={onLocalBrowserPick}
+        />
+      )}
     </>
   );
 }
@@ -359,23 +411,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 8,
   },
-  pickerBtn: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  pickerBtnEmpty: { borderStyle: 'dashed' },
-  pickerBtnText: { color: colors.text, fontSize: 14, flex: 1, fontFamily: 'Menlo' },
-  pickerBtnTextEmpty: { color: colors.textDim, fontStyle: 'italic', fontFamily: undefined },
-  pickerArrow: { color: colors.textDim, fontSize: 20 },
-  hint: { color: colors.textDim, fontSize: 11, marginTop: 6 },
   peer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -401,16 +436,6 @@ const styles = StyleSheet.create({
   },
   checkboxOn: { borderColor: colors.accent, backgroundColor: colors.accent },
   checkmark: { color: '#fff', fontSize: 14, fontWeight: '700' },
-  safBtn: {
-    marginTop: 4,
-    marginBottom: 12,
-    paddingVertical: 8,
-  },
-  safBtnText: {
-    color: colors.accent,
-    fontSize: 13,
-    fontWeight: '500',
-  },
   error: { color: colors.error, fontSize: 13, marginTop: 12 },
   presetRow: { flexDirection: 'row', gap: 10 },
   presetChip: {

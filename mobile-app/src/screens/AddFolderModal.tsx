@@ -11,6 +11,7 @@ import { isAbortError } from '../api/syncthing';
 import { FolderPicker } from './FolderPicker';
 import { AndroidLocalBrowser } from './AndroidLocalBrowser';
 import { FolderTypePicker } from '../components/FolderTypePicker';
+import { FolderLocationPicker, type LocationKind } from '../components/FolderLocationPicker';
 import {
   filesystemTypeForExternal,
   pickExternalFolderWithICloudWarning,
@@ -133,6 +134,15 @@ export function AddFolderModal({ visible, onClose, onAdded }: Props) {
   const idValid = FOLDER_ID_RE.test(effectiveId);
   const canSubmit = path.length > 0 && idValid;
 
+  // Which destination card is currently active (drives the unified picker UI).
+  const locationKind: LocationKind | null = !path
+    ? null
+    : !isExternal
+      ? 'app'
+      : path.startsWith('content://')
+        ? 'saf'
+        : 'device';
+
   const pickExternal = () => {
     try {
       pickExternalFolderWithICloudWarning(folder => {
@@ -146,12 +156,10 @@ export function AddFolderModal({ visible, onClose, onAdded }: Props) {
     }
   };
 
-  // Primary picker: full-screen native browser when MANAGE granted (covers
-  // Download root and any other path Android's SAF picker refuses), SAF
-  // otherwise. The SAF route is still exposed below as an alternate so cloud
-  // and SD-card folders remain reachable.
-  const pickPrimary = () => {
-    if (Platform.OS === 'android' && hasAllFilesAccess) {
+  // Device card: full-screen native browser on Android (All Files Access is
+  // already confirmed by the card before this runs), document picker on iOS.
+  const pickDevice = () => {
+    if (Platform.OS === 'android') {
       setLocalBrowserOpen(true);
       return;
     }
@@ -304,59 +312,16 @@ export function AddFolderModal({ visible, onClose, onAdded }: Props) {
         submitDisabled={!canSubmit}
       >
         <Text style={styles.sectionLabel}>Location</Text>
-        <Focusable
-          style={[styles.pickerBtn, !path && styles.pickerBtnEmpty]}
-          onPress={pickPrimary}
-        >
-          <Text style={[styles.pickerBtnText, !path && styles.pickerBtnTextEmpty]} numberOfLines={2}>
-            {displayPath || 'Pick a folder on this device…'}
-          </Text>
-          <Text style={styles.pickerArrow}>›</Text>
-        </Focusable>
-        <Text style={styles.hint}>
-          {isExternal
-            ? 'Syncing directly with this device folder.'
-            : path
-              ? 'This folder lives inside the app sandbox and appears in the Files app.'
-              : 'Pick any folder on your device, or tap below to use app storage.'}
-        </Text>
-        {Platform.OS === 'android' && !hasAllFilesAccess && !path && (
-          <View style={styles.permBanner}>
-            <Text style={styles.permBannerTitle}>Unlock Downloads, Pictures, and more</Text>
-            <Text style={styles.permBannerText}>
-              Android's system folder picker hides Downloads and other shared folders. Grant All
-              Files Access to browse them directly.
-            </Text>
-            <Focusable style={styles.permBannerBtn} onPress={requestAllFilesAccess}>
-              <Text style={styles.permBannerBtnText}>Grant All Files Access</Text>
-            </Focusable>
-          </View>
-        )}
-        {Platform.OS === 'android' && hasAllFilesAccess && !isExternal && (
-          <Focusable style={styles.safBtn} onPress={pickExternal}>
-            <Text style={styles.safBtnText}>Pick a cloud or SD-card folder (SAF)</Text>
-          </Focusable>
-        )}
-        {isExternal ? (
-          <Focusable
-            style={styles.safBtn}
-            onPress={() => {
-              setIsExternal(false);
-              setPath('');
-              setExternalDisplayName('');
-            }}
-          >
-            <Text style={styles.safBtnText}>Use app storage instead</Text>
-          </Focusable>
-        ) : (
-          <Focusable
-            style={styles.safBtn}
-            onPress={() => setPickerOpen(true)}
-            disabled={!pickerRoot}
-          >
-            <Text style={styles.safBtnText}>Use app storage instead</Text>
-          </Focusable>
-        )}
+        <FolderLocationPicker
+          selected={locationKind}
+          chosenLabel={displayPath}
+          hasAllFilesAccess={hasAllFilesAccess}
+          appDisabled={!pickerRoot}
+          onPickApp={() => setPickerOpen(true)}
+          onPickDevice={pickDevice}
+          onPickSaf={pickExternal}
+          onRequestAllFilesAccess={requestAllFilesAccess}
+        />
 
         {path && (
           <View style={styles.summary}>
@@ -543,23 +508,6 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     marginBottom: 8,
   },
-  pickerBtn: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  pickerBtnEmpty: { borderStyle: 'dashed' },
-  pickerBtnText: { color: colors.text, fontSize: 14, flex: 1, fontFamily: 'Menlo' },
-  pickerBtnTextEmpty: { color: colors.textDim, fontStyle: 'italic', fontFamily: undefined },
-  pickerArrow: { color: colors.textDim, fontSize: 20 },
-  hint: { color: colors.textDim, fontSize: 11, marginTop: 6, marginBottom: 16 },
   summary: {
     backgroundColor: colors.card,
     borderRadius: 10,
@@ -604,49 +552,6 @@ const styles = StyleSheet.create({
   advancedToggle: { marginTop: 18, paddingVertical: 8 },
   advancedToggleText: { color: colors.textDim, fontSize: 13, fontWeight: '500' },
   advanced: { marginTop: 8 },
-  safBtn: {
-    marginTop: 4,
-    marginBottom: 12,
-    paddingVertical: 8,
-  },
-  safBtnText: {
-    color: colors.accent,
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  permBanner: {
-    backgroundColor: colors.card,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: 12,
-    marginTop: 4,
-    marginBottom: 12,
-    gap: 8,
-  },
-  permBannerTitle: {
-    color: colors.text,
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  permBannerText: {
-    color: colors.textDim,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  permBannerBtn: {
-    alignSelf: 'flex-start',
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 6,
-    borderWidth: 1,
-    borderColor: colors.accent,
-  },
-  permBannerBtnText: {
-    color: colors.accent,
-    fontSize: 12,
-    fontWeight: '600',
-  },
   error: { color: colors.error, fontSize: 13, marginTop: 8 },
   presetRow: { flexDirection: 'row', gap: 10 },
   presetChip: {
