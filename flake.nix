@@ -55,7 +55,7 @@
 
         devShells.default = pkgs.mkShellNoCC {
           buildInputs = with pkgs; [
-            go_1_25
+            go_1_26
             gotools
 
             # Node

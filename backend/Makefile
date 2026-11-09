@@ -4,8 +4,7 @@ GOROOT ?= $(shell $(GO) env GOROOT)
 GOMOBILE ?= $(GOPATH)/bin/gomobile
 GOBIND ?= $(GOPATH)/bin/gobind
 
-# This var helps pin go, else it can update at will to 1.25.9
-export GOTOOLCHAIN = go1.25.0
+export GOTOOLCHAIN = go1.26.10
 
 ANDROID_OUTPUT = ../mobile-app/android/app/libs/gobridge.aar
 IOS_OUTPUT = ../mobile-app/ios/Frameworks/Gobridge.xcframework

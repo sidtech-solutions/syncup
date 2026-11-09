@@ -1,6 +1,8 @@
 module github.com/siddarthkay/syncup
 
-go 1.25.0
+go 1.26.0
+
+toolchain go1.26.10
 
 replace github.com/gobwas/glob v0.2.3 => github.com/calmh/glob v0.0.0-20220615080505-1d823af5017b
 
@@ -11,10 +13,13 @@ replace github.com/gobwas/glob v0.2.3 => github.com/calmh/glob v0.0.0-2022061508
 // (or `make gen-assets`) creates it from $GOPATH/pkg/mod and runs go-generate.
 replace github.com/syncthing/syncthing => ./syncthing-fork
 
-require github.com/syncthing/syncthing v1.30.0-rc.1.0.20260211104138-dc2a77ab8e5b
+require (
+	github.com/syncthing/syncthing v1.30.0-rc.1.0.20260211104138-dc2a77ab8e5b
+	github.com/yeka/zip v0.0.0-20231116150916-03d6312748a9
+)
 
 require (
-	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
+	github.com/Azure/go-ntlmssp v0.1.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/calmh/incontainer v1.0.0 // indirect
 	github.com/calmh/xdr v1.2.0 // indirect
@@ -49,7 +54,7 @@ require (
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.66.1 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
-	github.com/quic-go/quic-go v0.59.0 // indirect
+	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/shirou/gopsutil/v4 v4.26.1 // indirect
@@ -62,19 +67,18 @@ require (
 	github.com/tklauser/numcpus v0.11.0 // indirect
 	github.com/vitrun/qart v0.0.0-20160531060029-bf64b92db6b0 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect
-	github.com/yeka/zip v0.0.0-20231116150916-03d6312748a9 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260209203927-2842357ff358 // indirect
 	golang.org/x/mobile v0.0.0-20260508232728-bebd421c7fa8 // indirect
-	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/net v0.54.0 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/sys v0.44.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/net v0.62.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.14.0 // indirect
-	golang.org/x/tools v0.45.0 // indirect
+	golang.org/x/tools v0.51.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	modernc.org/libc v1.67.6 // indirect
