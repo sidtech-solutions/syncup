@@ -15,6 +15,7 @@ runs:
     - uses: actions/setup-node@v4
       with:
         node-version: '22'
+        check-latest: true
 
     - name: Enable corepack (yarn version from package.json#packageManager)
       shell: bash
