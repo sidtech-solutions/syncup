@@ -79,6 +79,20 @@
   },
   "private": true,
   "resolutions": {
-    "expo-modules-jsi@npm:~57.0.3": "patch:expo-modules-jsi@npm%3A57.0.3#~/.yarn/patches/expo-modules-jsi-npm-57.0.3-26839930f3.patch"
+    "expo-modules-jsi@npm:~57.0.3": "patch:expo-modules-jsi@npm%3A57.0.3#~/.yarn/patches/expo-modules-jsi-npm-57.0.3-26839930f3.patch",
+    "uuid@npm:^7.0.3": "11.1.1",
+    "glob@npm:^10.2.2": "14.0.4",
+    "glob@npm:^10.5.0": "14.0.4",
+    "glob@npm:^13.0.0": "14.0.4",
+    "glob@npm:13.0.1": "14.0.4",
+    "glob@npm:^7.1.4": "14.0.4",
+    "minimatch@npm:^9.0.4": "11.0.5",
+    "minimatch@npm:^10.1.2": "11.0.5",
+    "minimatch@npm:^10.2.2": "11.0.5",
+    "test-exclude@npm:^6.0.0": "8.0.0",
+    "zod@npm:^3.25.76": "4.6.7",
+    "glob@npm:^13.0.6": "14.0.4",
+    "minimatch@npm:^10.2.4": "11.0.5",
+    "minimatch@npm:^10.2.6": "11.0.5"
   }
 }

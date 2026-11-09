@@ -2,7 +2,7 @@
   description = "SyncUp dev environment";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/566acc07c54dc807f91625bb286cb9b321b5f42a";
+    nixpkgs.url = "github:NixOS/nixpkgs/f4a03c008967841f2a0b3cb7c436fc6fc31671f6";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
