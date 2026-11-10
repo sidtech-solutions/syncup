@@ -53,6 +53,14 @@ function Shell() {
   const { width } = useWindowDimensions();
   const isWide = width >= 700;
 
+  // Reconcile the periodic photo-backup job with the saved config on launch, so
+  // an enabled auto-backup survives reinstalls / OS-cleared registrations.
+  useEffect(() => {
+    void import('./src/services/photoBackupTask').then(m =>
+      m.syncAutoBackupRegistration(),
+    );
+  }, []);
+
   const handleSetTab = useCallback((next: CoachTabKey) => setTab(next), []);
   const handleOnboardingDone = useCallback(() => {
     onboarding.complete();
